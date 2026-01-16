@@ -1,57 +1,74 @@
-# Copilot Studio Agent Reporting Solution
+# Copilot Studio Agent Reporting Solution (v1.0)
 
-This repository provides PowerShell scripts to generate comprehensive usage and consumption reports for Copilot Studio agents across Power Platform environments.
+This repository provides PowerShell scripts to generate comprehensive usage and consumption reports for Copilot Studio agents across Power Platform environments using **Azure Resource Graph** and **Power Platform Licensing APIs**.
 
 ## Overview
 
-This solution retrieves agent metadata and consumption data from Power Platform APIs to create a consolidated report with 8 of the 12 requested fields. The remaining fields are not available through any public or discoverable API endpoints.
+This solution retrieves agent metadata and consumption data from Azure Resource Graph and Power Platform APIs to create a consolidated report with 8 of the 12 requested fields. The solution uses direct KQL queries through Azure Resource Graph for reliable data retrieval.
+
+## Quick Start
+
+**Single comprehensive script (recommended):**
+```powershell
+.\scripts\Get-CompleteCopilotReport.ps1
+```
+
+This retrieves all 8 available fields in a single execution with automatic authentication handling.
 
 ## Available Data Fields (8/12)
 
 | # | Field | Available | Source | Notes |
 |---|-------|-----------|--------|-------|
-| 1 | Agent Identifier (Primary Key) | ✅ Yes | Inventory API | `Item ID` field |
-| 2 | Environment ID | ✅ Yes | Inventory API | Environment identifier |
-| 3 | Agent Name | ✅ Yes | Inventory API | Agent display name |
+| 1 | Agent Identifier (Primary Key) | ✅ Yes | Azure Resource Graph | Agent GUID |
+| 2 | Environment ID | ✅ Yes | Azure Resource Graph | Environment identifier |
+| 3 | Agent Name | ✅ Yes | Azure Resource Graph | Agent display name |
 | 4 | Agent Description | ❌ No | N/A | Not available in any API |
-| 5 | Created At (timestamp) | ✅ Yes | Inventory API | `Created on` field |
-| 6 | Updated At (timestamp) | ✅ Yes | Inventory API | `Modified on` field |
+| 5 | Created At (timestamp) | ✅ Yes | Azure Resource Graph | Creation timestamp |
+| 6 | Updated At (timestamp) | ❌ No | N/A | Not exposed by Resource Graph |
 | 7 | Solution ID | ❌ No | N/A | Requires Dataverse per-environment query |
-| 8 | Agent Owner | ✅ Yes | Inventory API | Owner identifier |
+| 8 | Agent Owner | ✅ Yes | Azure Resource Graph | Owner identifier |
 | 9 | Active Users | ❌ No | N/A | Not available in any API |
 | 10 | Billed Copilot Credits | ✅ Yes | Licensing API* | Consumption in MB |
 | 11 | Non-Billed Credits | ✅ Yes | Licensing API* | Non-billable consumption in MB |
-| 12 | Is Published | ✅ Yes | Inventory API | `Published on` timestamp |
+| 12 | Is Published | ✅ Yes | Azure Resource Graph | Last published timestamp |
 
 **\* Licensing API discovered via browser developer tools - no official documentation available**
 
 ## API Endpoints Used
 
-### 1. Power Platform Inventory API (Documented)
-- **Endpoint**: `https://api.powerplatform.com/resourcequery/resources/query?api-version=2024-10-01`
-- **Method**: POST
-- **Documentation**: Public Microsoft API
-- **Authentication**: OAuth 2.0 (Device Code Flow)
-- **Purpose**: Retrieves agent metadata including name, environment, owner, creation dates
-- **Returns**: All agents across all environments (tested: 115 agents)
+### 1. Azure Resource Graph API (Recommended - Official)
+- **Endpoint**: `https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2021-03-01`
+- **Method**: POST with direct KQL query
+- **Documentation**: [Azure Resource Graph documentation](https://learn.microsoft.com/en-us/azure/governance/resource-graph/)
+- **Authentication**: OAuth 2.0 (Device Code Flow) with Azure Management scope
+- **Purpose**: Retrieves Power Platform inventory including agent metadata
+- **Advantages**: 
+  - Uses direct KQL queries (simpler, more reliable)
+  - Official Microsoft API with full documentation
+  - Works with standard Azure authentication
+  - More stable than preview APIs
 
 **Query Format**:
 ```json
 {
-  "Options": {
-    "Top": 1000,
-    "Skip": 0
-  },
-  "TableName": "PowerPlatformResources",
-  "Clauses": [
-    {
-      "$type": "where",
-      "FieldName": "type",
-      "Operator": "in~",
-      "Values": ["Microsoft.PowerPlatform/copilots"]
-    }
-  ]
+  "query": "PowerPlatformResources\n| where type == 'microsoft.copilotstudio/agents'\n| take 1000"
 }
+```
+
+**Sample KQL Query**:
+```kql
+PowerPlatformResources
+| where type == 'microsoft.copilotstudio/agents'
+| extend properties = parse_json(properties)
+| project 
+    name,
+    location,
+    displayName = properties.displayName,
+    environmentId = properties.environmentId,
+    createdAt = properties.createdAt,
+    ownerId = properties.ownerId,
+    lastPublishedAt = properties.lastPublishedAt
+| take 1000
 ```
 
 ### 2. Licensing API - Credits Consumption (Undocumented)
@@ -70,7 +87,7 @@ This solution retrieves agent metadata and consumption data from Power Platform 
 **Important Notes**:
 - This API is **version 0.1-alpha** (pre-release/unsupported)
 - No official Microsoft documentation exists
-- Discovered by inspecting network traffic in PPAC browser developer tools
+- Discovered by inspecting network traffic in PPAC browser developer tools (F12)
 - May change or be deprecated without notice
 - Returns consumption broken down by:
   - Channel (M365 Copilot, Teams, Autonomous)
@@ -79,58 +96,71 @@ This solution retrieves agent metadata and consumption data from Power Platform 
 
 ## Scripts
 
-### 1. Get-AllAgents-InventoryAPI-v2.ps1
-Retrieves all Copilot Studio agents using the Power Platform Inventory API.
+### Get-CompleteCopilotReport.ps1 (Recommended - All-in-One Solution)
+Single comprehensive script that retrieves all available data in one execution.
 
-**Returns**: 6 fields for all agents
-- Agent ID, Name
-- Environment ID, Name, Type, Region
-- Owner
-- Created/Modified/Published dates
-
-**Usage**:
-```powershell
-.\Get-AllAgents-InventoryAPI-v2.ps1
-```
-
-**Output**: `CopilotAgents_InventoryAPI.csv`
-
-### 2. Get-CopilotCredits-v2.ps1
-Retrieves credits consumption data using the undocumented Licensing API.
+**Features**:
+- ✅ Automatic authentication handling (2 auth flows: Azure + Licensing)
+- ✅ Uses Azure Resource Graph with direct KQL (most reliable method)
+- ✅ Retrieves all 115 agents across all environments
+- ✅ Collects credits data with 365-day lookback
+- ✅ Smart merging of all data sources
+- ✅ Detailed progress indicators and summary statistics
+- ✅ Saves timestamped CSV output
 
 **Parameters**:
-- `-TenantId`: Azure AD Tenant ID (default: auto-detect)
-- `-LookbackDays`: Number of days to look back (default: 365)
-
-**Returns**: Billed and Non-billed credits per agent
-- Credits consumption in MB
-- Breakdown by channel and feature
+- `-TenantId`: Azure AD Tenant ID (default: auto-detected from token)
+- `-LookbackDays`: Credits lookback period (default: 365 days)
+- `-IncludeDataverse`: Include Solution ID/Description from Dataverse (optional, experimental)
 
 **Usage**:
 ```powershell
-# Default: 365-day lookback (recommended)
-.\Get-CopilotCredits-v2.ps1
+# Simple execution (recommended)
+.\Get-CompleteCopilotReport.ps1
 
-# Custom: 90-day lookback
-.\Get-CopilotCredits-v2.ps1 -LookbackDays 90
+# With custom lookback
+.\Get-CompleteCopilotReport.ps1 -LookbackDays 90
+
+# With Dataverse fields (experimental)
+.\Get-CompleteCopilotReport.ps1 -IncludeDataverse
 ```
 
-**Output**: 
-- `CopilotCredits_Detailed_TIMESTAMP.csv` - All consumption records
-- `CopilotCredits_Summary_TIMESTAMP.csv` - Aggregated by agent
+**Output**: `CopilotAgents_CompleteReport_TIMESTAMP.csv`
+- All 115 agents with 8/12 available fields
+- Credits consumption (billed + non-billed)
+- Execution summary with statistics
 
-### 3. Merge-InventoryAndCredits.ps1
-Combines Inventory and Credits data into a single comprehensive report.
+### Legacy Scripts (Optional - Individual Components)
+
+<details>
+<summary>Click to expand legacy scripts</summary>
+
+#### Get-AllAgents-InventoryAPI-v2.ps1
+Original script using Power Platform Inventory API (Note: KQLOM format may be deprecated).
+
+**Note**: This script may fail due to recent API changes. Use `Get-CompleteCopilotReport.ps1` instead.
+
+#### Get-CopilotCredits-v2.ps1
+Standalone credits retrieval using the Licensing API.
+
+**Parameters**:
+- `-TenantId`: Azure AD Tenant ID
+- `-LookbackDays`: Number of days (default: 365)
+
+**Usage**:
+```powershell
+.\Get-CopilotCredits-v2.ps1 -LookbackDays 365
+```
+
+#### Merge-InventoryAndCredits.ps1
+Merges separately generated Inventory and Credits CSV files.
 
 **Usage**:
 ```powershell
 .\Merge-InventoryAndCredits.ps1
 ```
 
-**Output**: `CopilotAgents_Complete_TIMESTAMP.csv`
-- All agents from Inventory (115 total)
-- Credits data merged (0 for agents without usage)
-- 8 of 12 requested fields
+</details>
 
 ## Prerequisites
 
@@ -148,19 +178,33 @@ All scripts use **OAuth 2.0 Device Code Flow**:
 3. Enter the code and authenticate
 4. Script continues after authentication
 
-**Note**: You'll authenticate twice when running the merge workflow:
-- Once for Inventory API
-- Once for Licensing API
-
 ## Workflow
 
-1. **Run Inventory API script** to get all agents:
+### Recommended: Single Script Execution
+```powershell
+cd scripts
+.\Get-CompleteCopilotReport.ps1
+```
+
+This handles everything automatically:
+1. Authenticates to Azure Resource Graph
+2. Retrieves all 115 agents
+3. Authenticates to Licensing API
+4. Retrieves credits data (365-day lookback)
+5. Merges all data
+6. Generates timestamped CSV report
+
+### Alternative: Legacy 3-Step Process
+
+<details>
+<summary>Click for manual 3-step workflow</summary>
+
+1. **Run Inventory API script**:
    ```powershell
-   cd scripts
    .\Get-AllAgents-InventoryAPI-v2.ps1
    ```
 
-2. **Run Credits API script** to get consumption data:
+2. **Run Credits API script**:
    ```powershell
    .\Get-CopilotCredits-v2.ps1
    ```
@@ -170,46 +214,55 @@ All scripts use **OAuth 2.0 Device Code Flow**:
    .\Merge-InventoryAndCredits.ps1
    ```
 
-4. **Review output**: `CopilotAgents_Complete_TIMESTAMP.csv`
+**Note**: The Inventory API script may fail due to recent API changes. Use the comprehensive script instead.
+
+</details>
 
 ## Limitations & Unavailable Fields
 
 ### Fields Not Available via API
 
 1. **Agent Description**
-   - Not returned by Inventory API
+   - Not returned by Azure Resource Graph
    - Not available in any public or discovered API
    - Would require direct Dataverse query per environment
 
 2. **Solution ID**
-   - Not returned by Inventory API
-   - Available only via Dataverse query
-   - Format: `dataverse://environments/{env}/tables/bot/rows/{agentId}?columns=solutionid`
-   - Requires per-environment authentication
+   - Not returned by Azure Resource Graph
+   - Available only via Dataverse query per environment
+   - Format: `https://{env}.crm.dynamics.com/api/data/v9.2/bots?$select=solutionid`
+   - Requires per-environment authentication and proper region URLs
 
 3. **Active Users**
    - Not available in any API endpoint
    - Microsoft Analytics API only shows aggregate metrics
    - Individual agent user counts not exposed
 
+4. **Updated At (Modified Timestamp)**
+   - Not exposed by Azure Resource Graph for agents
+   - Known limitation documented by Microsoft
+
 ### Tested but Non-Working Approaches
 
 The following approaches were tested but did not provide the required data:
 
-1. **Official Licensing API** (`/entitlements/MCSMessages/summary`)
+1. **Power Platform Inventory API (KQLOM JSON format)**
+   - Initially worked, then broke with API changes
+   - Returns "KQLOM format is wrong or it cannot be null" error
+   - Microsoft documentation examples also fail
+   - **Solution**: Switched to Azure Resource Graph with direct KQL
+
+2. **Official Licensing API** (`/entitlements/MCSMessages/summary`)
    - Returns license capacity (50,000 messages)
    - Does NOT return actual consumption data
 
-2. **Microsoft.PowerPlatform.SDK**
+3. **Microsoft.PowerPlatform.SDK**
    - .NET SDK does not expose credits/consumption APIs
    - Compilation issues with current SDK version
 
-3. **PPAC Export API** (`/api/PowerPlatform/Environment/Export`)
+4. **PPAC Export API** (`/api/PowerPlatform/Environment/Export`)
    - Returns 405 Method Not Allowed
    - Not accessible via public authentication
-
-4. **Resource Graph API**
-   - Only returns resource metadata, not consumption
 
 ## Testing Results
 

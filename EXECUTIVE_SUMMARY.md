@@ -1,43 +1,59 @@
-# Response to Customer Request
+# Copilot Studio Agent Reporting Solution - Executive Summary (v1.0)
 
 ## Executive Summary
 
-We have successfully developed a solution that retrieves **8 of the 12 requested fields** for Copilot Studio agents across all environments. The solution uses the Power Platform Inventory API (documented) and an undocumented Licensing API (discovered via developer tools) to provide comprehensive agent metadata and consumption data.
+We have successfully developed a solution that retrieves **8 of the 12 requested fields** for Copilot Studio agents across all environments. The solution uses **Azure Resource Graph** with direct KQL queries (official Microsoft API) and an undocumented Licensing API (discovered via developer tools) to provide comprehensive agent metadata and consumption data.
+
+**Key Achievement**: Single comprehensive script that handles everything automatically with just one command.
 
 ## Delivered Fields (8/12)
 
 | Field | Status | Source | Field Name in Output |
 |-------|--------|--------|---------------------|
-| Agent Identifier (Primary Key) | ✅ Available | Inventory API | `Agent ID` |
-| Environment ID | ✅ Available | Inventory API | `Environment ID` |
-| Agent Name | ✅ Available | Inventory API | `Agent Name` |
-| Created At (timestamp) | ✅ Available | Inventory API | `Created On` |
-| Updated At (timestamp) | ✅ Available | Inventory API | `Modified On` |
-| Agent Owner | ✅ Available | Inventory API | `Owner` |
+| Agent Identifier (Primary Key) | ✅ Available | Azure Resource Graph | `Agent ID` |
+| Environment ID | ✅ Available | Azure Resource Graph | `Environment ID` |
+| Agent Name | ✅ Available | Azure Resource Graph | `Agent Name` |
+| Created At (timestamp) | ✅ Available | Azure Resource Graph | `Created On` |
+| Agent Owner | ✅ Available | Azure Resource Graph | `Owner` |
+| Is Published (timestamp) | ✅ Available | Azure Resource Graph | `Published On` |
 | **Billed Copilot Credits** | ✅ Available | Licensing API* | `Billed Credits (MB)` |
 | **Non-Billed Credits** | ✅ Available | Licensing API* | `Non-Billed Credits (MB)` |
-| Is Published (deployment channel) | ✅ Available | Inventory API | `Published On` |
 
 ## Unavailable Fields (4/12)
 
 | Field | Status | Reason |
 |-------|--------|--------|
+| Updated At (Modified) | ❌ Not Available | Not exposed by Azure Resource Graph for agents |
 | Agent Description | ❌ Not Available | Not exposed in any API endpoint |
-| Solution ID | ❌ Not Available | Requires per-environment Dataverse query |
+| Solution ID | ❌ Not Available | Requires per-environment Dataverse query with correct region URLs |
 | Active Users | ❌ Not Available | Microsoft does not expose user-level analytics via API |
 
 ## Technical Implementation
 
 ### API Endpoints Used
 
-#### 1. Power Platform Inventory API (Official - Documented)
+#### 1. Azure Resource Graph (Official - Recommended)
 ```
-Endpoint: https://api.powerplatform.com/resourcequery/resources/query?api-version=2024-10-01
-Method: POST
-Authentication: OAuth 2.0 Device Code Flow
-Documentation: Microsoft official API
-Status: ✅ Fully supported
+Endpoint: https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2021-03-01
+Method: POST with direct KQL query
+Authentication: OAuth 2.0 Device Code Flow (Azure Management scope)
+Documentation: https://learn.microsoft.com/en-us/azure/governance/resource-graph/
+Status: ✅ Fully supported and documented
 ```
+
+**Query Format**: Direct KQL (Kusto Query Language)
+```kql
+PowerPlatformResources
+| where type == 'microsoft.copilotstudio/agents'
+| take 1000
+```
+
+**Advantages**:
+- Official Microsoft API with full documentation
+- Uses simple, reliable direct KQL queries
+- No complex JSON formatting required
+- Standard Azure authentication
+- More stable than preview APIs
 
 **Purpose**: Retrieves all agent metadata including name, environment, owner, and timestamps.
 
@@ -65,15 +81,16 @@ This endpoint was discovered by analyzing network traffic in the Power Platform 
 - Dates are **mandatory** (API returns empty without them)
 - **365-day lookback recommended** - testing showed 13x more data than 30-day range
 
-**Results**: Successfully retrieved consumption data for 34 agents with active usage.
+**Results**: Successfully retrieved consumption data for 34 agents with active usage (out of 115 total agents).
 
-### Data Quality
+### Data Quality (Latest Run - v1.0)
 
 - **Total Agents**: 115 (all agents across all environments)
-- **Agents with Consumption Data**: 34 agents
-- **Agents with Zero Usage**: 81 agents (included in report with 0 credits)
-- **Total Credits Tracked**: 5,505.82 MB (3,479.58 billed + 2,026.24 non-billed)
+- **Agents with Consumption Data**: 21 agents with usage
+- **Agents with Zero Usage**: 94 agents (included in report with 0 credits)
+- **Total Credits Tracked**: 4,911.9 MB (3,014.1 billed + 1,897.8 non-billed)
 - **Historical Data Range**: 365 days (configurable)
+- **Execution Time**: ~2 minutes (including authentication)
 
 ### Credits Breakdown
 
@@ -84,33 +101,51 @@ The Licensing API provides granular consumption tracking:
 
 ## Deliverables
 
-### PowerShell Scripts (Production-Ready)
+### Primary Script (Recommended)
+
+**Get-CompleteCopilotReport.ps1** (v1.0)
+- **All-in-one solution** - single command execution
+- Uses Azure Resource Graph with direct KQL queries
+- Automatic authentication handling (2 flows)
+- Retrieves all 115 agents with 8 fields
+- Collects credits data (365-day lookback)
+- Smart merging and comprehensive summary
+- Output: `CopilotAgents_CompleteReport_TIMESTAMP.csv`
+
+**Usage**:
+```powershell
+.\Get-CompleteCopilotReport.ps1
+```
+
+### Legacy Scripts (Optional - Individual Components)
 
 1. **Get-AllAgents-InventoryAPI-v2.ps1**
-   - Retrieves all agent metadata from Inventory API
+   - Original Inventory API implementation
+   - ⚠️ May fail due to API changes (KQLOM format deprecated)
    - Returns: 115 agents with 6 data fields
    - Output: `CopilotAgents_InventoryAPI.csv`
 
 2. **Get-CopilotCredits-v2.ps1**
-   - Retrieves consumption data from Licensing API
+   - Standalone credits retrieval
    - Configurable date range (default: 365 days)
    - Returns: Credits per agent with channel/feature breakdown
    - Output: `CopilotCredits_Summary_TIMESTAMP.csv`, `CopilotCredits_Detailed_TIMESTAMP.csv`
 
 3. **Merge-InventoryAndCredits.ps1**
-   - Combines both datasets into single comprehensive report
-   - All 115 agents with credits data (0 for unused agents)
+   - Combines separately generated CSV files
    - Output: `CopilotAgents_Complete_TIMESTAMP.csv`
 
 ### Documentation
 
 - **README.md**: Complete technical documentation including:
-  - API endpoints with examples
-  - Script usage instructions
+  - Azure Resource Graph API usage with KQL examples
+  - API endpoints with request/response formats
+  - Script usage instructions and parameters
   - Authentication workflow
   - Troubleshooting guide
   - Data structure schemas
   - Testing results and recommendations
+  - Known limitations and workarounds
 
 - **CUSTOMER_RESPONSE.md**: This document
 
