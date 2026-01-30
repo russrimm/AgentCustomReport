@@ -14,7 +14,7 @@ This folder contains the Power BI template files for visualizing the agent repor
 ### Option 2: Connect Directly to Dataverse
 
 1. Open Power BI Desktop
-2. Click **Get Data** → **Dataverse** (or **Common Data Service**)
+2. Click **Get Data** → **Dataverse** (or **Dataverse**)
 3. Enter your environment URL
 4. Sign in with your credentials
 5. Select the following tables:
@@ -22,13 +22,6 @@ This folder contains the Power BI template files for visualizing the agent repor
    - `solutioncomponent` (for solution mappings)
    - `solution` (for solution details)
    - `systemuser` (for owner information)
-
-### Option 3: Use Power BI Dataflow
-
-For enterprise scenarios, create a Power BI Dataflow that:
-1. Connects to Dataverse for agent metadata
-2. Uses Power Query to call the Admin API for usage data
-3. Merges the data into a unified dataset
 
 ## Recommended Visualizations
 

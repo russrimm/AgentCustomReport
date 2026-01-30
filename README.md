@@ -1,77 +1,78 @@
-# Copilot Studio Agent Reporting Solution (v1.0)
+# Copilot Studio Agent Reporting Solution (v2.0)
 
-This repository provides PowerShell scripts to generate comprehensive usage and consumption reports for Copilot Studio agents across Power Platform environments using **Azure Resource Graph** and **Power Platform Licensing APIs**.
+This repository provides PowerShell scripts to generate comprehensive usage and consumption reports for Copilot Studio agents across Power Platform environments using **Power Platform Admin API**, **Dataverse API**, and **Power Platform Licensing API**.
 
 ## Overview
 
-This solution retrieves agent metadata and consumption data from Azure Resource Graph and Power Platform APIs to create a consolidated report with 8 of the 12 requested fields. The solution uses direct KQL queries through Azure Resource Graph for reliable data retrieval.
+This solution uses service principal authentication to retrieve agent metadata, owner details, and consumption data across all environments. The main script automates service principal creation using Power Platform CLI and queries three APIs to create a consolidated report with comprehensive agent information.
 
 ## Quick Start
 
-**Single comprehensive script (recommended):**
+**Single comprehensive script with automated setup (recommended):**
 ```powershell
+# First run - interactive setup
 .\scripts\Get-CompleteCopilotReport.ps1
+
+# Follow prompts to create service principal and authenticate
+# Script handles pac CLI installation and multi-environment registration
+
+# Future runs - with saved credentials
+.\scripts\Get-CompleteCopilotReport.ps1 -TenantId "..." -ClientId "..." -ClientSecret "..."
 ```
 
-This retrieves all 8 available fields in a single execution with automatic authentication handling.
+This retrieves all available agent data in a single execution with automated service principal setup.
 
-## Available Data Fields (8/12)
+## Available Data Fields (12/12)
 
 | # | Field | Available | Source | Notes |
 |---|-------|-----------|--------|-------|
-| 1 | Agent Identifier (Primary Key) | ✅ Yes | Azure Resource Graph | Agent GUID |
-| 2 | Environment ID | ✅ Yes | Azure Resource Graph | Environment identifier |
-| 3 | Agent Name | ✅ Yes | Azure Resource Graph | Agent display name |
-| 4 | Agent Description | ❌ No | N/A | Not available in any API |
-| 5 | Created At (timestamp) | ✅ Yes | Azure Resource Graph | Creation timestamp |
-| 6 | Updated At (timestamp) | ❌ No | N/A | Not exposed by Resource Graph |
-| 7 | Solution ID | ❌ No | N/A | Requires Dataverse per-environment query |
-| 8 | Agent Owner | ✅ Yes | Azure Resource Graph | Owner identifier |
-| 9 | Active Users | ❌ No | N/A | Not available in any API |
-| 10 | Billed Copilot Credits | ✅ Yes | Licensing API* | Consumption in MB |
-| 11 | Non-Billed Credits | ✅ Yes | Licensing API* | Non-billable consumption in MB |
-| 12 | Is Published | ✅ Yes | Azure Resource Graph | Last published timestamp |
+| 1 | Agent Identifier (Primary Key) | ✅ Yes | Dataverse API | Bot GUID |
+| 2 | Environment ID | ✅ Yes | Power Platform Admin API | Environment identifier |
+| 3 | Agent Name | ✅ Yes | Dataverse API | Bot name and display name |
+| 4 | Agent Description | ✅ Yes | Dataverse API | Bot description |
+| 5 | Created At (timestamp) | ✅ Yes | Dataverse API | Creation timestamp |
+| 6 | Modified At (timestamp) | ✅ Yes | Dataverse API | Last modified timestamp |
+| 7 | Solution ID | ✅ Yes | Dataverse API | Associated solution |
+| 8 | Agent Owner | ✅ Yes | Dataverse API | Owner name (via systemusers join) |
+| 9 | Created By | ✅ Yes | Dataverse API | Creator name (via systemusers join) |
+| 10 | Environment Details | ✅ Yes | Power Platform Admin API | Name, region, type |
+| 11 | Billed Copilot Credits | ✅ Yes | Licensing API* | Consumption in MB |
+| 12 | Non-Billed Credits | ✅ Yes | Licensing API* | Non-billable consumption in MB |
 
 **\* Licensing API discovered via browser developer tools - no official documentation available**
 
 ## API Endpoints Used
 
-### 1. Azure Resource Graph API (Recommended - Official)
-- **Endpoint**: `https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2021-03-01`
-- **Method**: POST with direct KQL query
-- **Documentation**: [Azure Resource Graph documentation](https://learn.microsoft.com/en-us/azure/governance/resource-graph/)
-- **Authentication**: OAuth 2.0 (Device Code Flow) with Azure Management scope
-- **Purpose**: Retrieves Power Platform inventory including agent metadata
-- **Advantages**: 
-  - Uses direct KQL queries (simpler, more reliable)
-  - Official Microsoft API with full documentation
-  - Works with standard Azure authentication
-  - More stable than preview APIs
+### 1. Power Platform Admin API (Official)
+- **Endpoint**: `https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/scopes/admin/environments`
+- **Method**: GET
+- **Documentation**: [Power Platform Admin API](https://learn.microsoft.com/power-platform/admin/)
+- **Authentication**: OAuth 2.0 with service principal (Client Credentials Flow)
+- **Purpose**: Enumerates all environments in the tenant
+- **Returns**: Environment ID, name, region, type, organization URL
+- **Scope**: `https://api.bap.microsoft.com/.default`
 
-**Query Format**:
-```json
-{
-  "query": "PowerPlatformResources\n| where type == 'microsoft.copilotstudio/agents'\n| take 1000"
-}
+### 2. Dataverse API (Per-Environment)
+- **Endpoint**: `https://{org}.crm.dynamics.com/api/data/v9.2/`
+- **Resources**: 
+  - `bots` - Agent/bot metadata
+  - `systemusers` - Owner and creator details
+  - `botcomponents` - Bot component information
+- **Method**: GET with OData queries
+- **Documentation**: [Dataverse Web API](https://learn.microsoft.com/power-apps/developer/data-platform/webapi/overview)
+- **Authentication**: OAuth 2.0 with service principal registered to environment
+- **Purpose**: Detailed bot data including description, solution ID, timestamps, owners
+- **Setup**: Service principal must be registered via `pac admin create-service-principal --environment {environmentId}`
+
+**Sample Query**:
+```
+https://{org}.crm.dynamics.com/api/data/v9.2/bots?
+  $select=botid,name,publishedby,displayname,schemaname,solutionid,
+          description,overriddencreatedon,modifiedon,_ownerid_value,_createdby_value
+  &$expand=ownerid($select=fullname),createdby($select=fullname)
 ```
 
-**Sample KQL Query**:
-```kql
-PowerPlatformResources
-| where type == 'microsoft.copilotstudio/agents'
-| extend properties = parse_json(properties)
-| project 
-    name,
-    location,
-    displayName = properties.displayName,
-    environmentId = properties.environmentId,
-    createdAt = properties.createdAt,
-    ownerId = properties.ownerId,
-    lastPublishedAt = properties.lastPublishedAt
-| take 1000
-```
-
-### 2. Licensing API - Credits Consumption (Undocumented)
+### 3. Licensing API - Credits Consumption (Undocumented)
 - **Endpoint**: `https://licensing.powerplatform.microsoft.com/v0.1-alpha/tenants/{tenantId}/entitlements/MCSMessages/environments/{environmentId}/resources?fromDate={MM-DD-YYYY}&toDate={MM-DD-YYYY}`
 - **Method**: GET
 - **Documentation**: ⚠️ **None - Discovered via browser developer tools**
@@ -97,38 +98,49 @@ PowerPlatformResources
 ## Scripts
 
 ### Get-CompleteCopilotReport.ps1 (Recommended - All-in-One Solution)
-Single comprehensive script that retrieves all available data in one execution.
+Comprehensive script with automated service principal setup that retrieves all available data.
 
 **Features**:
-- ✅ Automatic authentication handling (2 auth flows: Azure + Licensing)
-- ✅ Uses Azure Resource Graph with direct KQL (most reliable method)
-- ✅ Retrieves all 115 agents across all environments
-- ✅ Collects credits data with 365-day lookback
-- ✅ Smart merging of all data sources
-- ✅ Detailed progress indicators and summary statistics
-- ✅ Saves timestamped CSV output
+- ✅ **Zero-parameter execution** - automated service principal creation
+- ✅ Power Platform CLI auto-installation via winget
+- ✅ Interactive environment selection and multi-environment registration
+- ✅ Queries three APIs: Power Platform Admin, Dataverse (per-environment), Licensing
+- ✅ Comprehensive agent data: metadata, owners, descriptions, timestamps, credits
+- ✅ Single service principal works across all registered environments
+- ✅ Smart data merging from multiple sources
+- ✅ Detailed progress indicators and execution summary
+- ✅ Timestamped CSV output
 
 **Parameters**:
-- `-TenantId`: Azure AD Tenant ID (default: auto-detected from token)
-- `-LookbackDays`: Credits lookback period (default: 365 days)
-- `-IncludeDataverse`: Include Solution ID/Description from Dataverse (optional, experimental)
+- `-TenantId`: Azure AD Tenant ID (optional for first run, stored in credentials)
+- `-ClientId`: Service principal application ID (optional, prompts if not provided)
+- `-ClientSecret`: Service principal secret (optional, prompts if not provided)
 
 **Usage**:
 ```powershell
-# Simple execution (recommended)
+# First run - interactive setup with service principal creation
 .\Get-CompleteCopilotReport.ps1
+# Follow prompts: Create SP? → Select environment → Register to more environments?
+# Script displays credentials to save for future runs
 
-# With custom lookback
-.\Get-CompleteCopilotReport.ps1 -LookbackDays 90
+# Subsequent runs - automated with saved credentials
+.\Get-CompleteCopilotReport.ps1 -TenantId "..." -ClientId "..." -ClientSecret "..."
 
-# With Dataverse fields (experimental)
-.\Get-CompleteCopilotReport.ps1 -IncludeDataverse
+# Scheduled/automated execution
+.\Get-CompleteCopilotReport.ps1 `
+  -TenantId $env:COPILOT_TENANT_ID `
+  -ClientId $env:COPILOT_CLIENT_ID `
+  -ClientSecret $env:COPILOT_CLIENT_SECRET
 ```
 
-**Output**: `CopilotAgents_CompleteReport_TIMESTAMP.csv`
-- All 115 agents with 8/12 available fields
+**Output**: `CopilotAgents_CompleteReport_YYYYMMDD_HHMMSS.csv`
+- All agents with 12/12 available fields
+- Environment details (name, region, type)
+- Owner and creator names
 - Credits consumption (billed + non-billed)
 - Execution summary with statistics
+
+**Setup Documentation**: See [docs/ENTRA-APP-SETUP.md](docs/ENTRA-APP-SETUP.md) for detailed setup guide
 
 ### Legacy Scripts (Optional - Individual Components)
 
@@ -172,7 +184,28 @@ Merges separately generated Inventory and Credits CSV files.
 
 ## Authentication
 
-All scripts use **OAuth 2.0 Device Code Flow**:
+### Get-CompleteCopilotReport.ps1 - Service Principal (Automated)
+Uses **OAuth 2.0 Client Credentials Flow** with service principal:
+
+**First Run (Interactive Setup)**:
+1. Script checks for pac CLI, auto-installs if needed
+2. Prompts: "Do you need to create a new service principal? (Y/N)"
+3. If Y: Authenticates to Power Platform (`pac auth create`)
+4. Lists environments, prompts for selection
+5. Creates service principal: `pac admin create-service-principal --environment {id}`
+6. Displays credentials (ClientId, ClientSecret) with example command
+7. Optionally registers service principal to additional environments
+8. Proceeds with data collection
+
+**Subsequent Runs (Automated)**:
+- Provide credentials as parameters
+- Script authenticates silently using service principal
+- No user interaction required (suitable for automation)
+
+**Required Role**: Power Platform Administrator (for service principal creation)
+
+### Legacy Scripts - Device Code Flow
+Older scripts use **OAuth 2.0 Device Code Flow**:
 1. Script displays a device code
 2. Browser opens to `https://microsoft.com/devicelogin`
 3. Enter the code and authenticate
@@ -180,19 +213,30 @@ All scripts use **OAuth 2.0 Device Code Flow**:
 
 ## Workflow
 
-### Recommended: Single Script Execution
+### Recommended: Single Script with Automated Setup
 ```powershell
 cd scripts
 .\Get-CompleteCopilotReport.ps1
 ```
 
 This handles everything automatically:
-1. Authenticates to Azure Resource Graph
-2. Retrieves all 115 agents
-3. Authenticates to Licensing API
-4. Retrieves credits data (365-day lookback)
-5. Merges all data
-6. Generates timestamped CSV report
+
+**Setup Phase** (first run only):
+1. Checks for Power Platform CLI (installs if needed)
+2. Prompts to create service principal
+3. Authenticates to Power Platform
+4. Lists available environments
+5. Creates service principal for selected environment
+6. Parses and displays credentials
+7. Optionally registers to additional environments
+
+**Data Collection Phase** (every run):
+1. Authenticates using service principal (3 tokens: Admin API, Dataverse, Licensing)
+2. Queries Power Platform Admin API → All environments
+3. For each environment: Queries Dataverse API → Bots, owners, creators
+4. Queries Licensing API → Credits consumption data
+5. Merges all datasets (agents + environments + owners + credits)
+6. Generates timestamped CSV report with execution summary
 
 ### Alternative: Legacy 3-Step Process
 
@@ -218,29 +262,30 @@ This handles everything automatically:
 
 </details>
 
-## Limitations & Unavailable Fields
+## Limitations & Considerations
 
-### Fields Not Available via API
+### Current Limitations
 
-1. **Agent Description**
-   - Not returned by Azure Resource Graph
-   - Not available in any public or discovered API
-   - Would require direct Dataverse query per environment
+1. **Service Principal Registration Required**
+   - Service principal must be registered to each environment individually
+   - Registration done via `pac admin create-service-principal --environment {id}`
+   - Script supports multi-environment registration during setup
+   - Future environments require manual registration or re-running setup
 
-2. **Solution ID**
-   - Not returned by Azure Resource Graph
-   - Available only via Dataverse query per environment
-   - Format: `https://{env}.crm.dynamics.com/api/data/v9.2/bots?$select=solutionid`
-   - Requires per-environment authentication and proper region URLs
-
-3. **Active Users**
+2. **Active Users Metric**
    - Not available in any API endpoint
-   - Microsoft Analytics API only shows aggregate metrics
-   - Individual agent user counts not exposed
+   - Microsoft Analytics API only shows aggregate tenant metrics
+   - Individual agent user counts not exposed via any known API
 
-4. **Updated At (Modified Timestamp)**
-   - Not exposed by Azure Resource Graph for agents
-   - Known limitation documented by Microsoft
+3. **Per-Environment API Calls**
+   - Dataverse API requires separate call per environment
+   - Large tenants with many environments may have longer execution times
+   - Rate limiting considerations for environments with many agents
+
+4. **Credits Data Availability**
+   - Only available for agents with actual usage
+   - Historical data limited to lookback period
+   - Licensing API is undocumented (v0.1-alpha) and may change
 
 ### Tested but Non-Working Approaches
 
@@ -383,17 +428,29 @@ MIT License - Use at your own risk
 
 ## Version History
 
+- **v2.0** (2026-01-30): Service principal automation and complete field coverage
+  - Automated service principal creation via pac CLI
+  - Power Platform Admin API integration
+  - Dataverse API per-environment queries
+  - 12/12 fields available (all requested fields except Active Users)
+  - Multi-environment registration support
+  - Zero-parameter interactive setup
+  - Removed Environment Type column (was always blank)
+  - Fixed error handling and SecureString conversion issues
+
 - **v1.0** (2026-01-11): Initial release
-  - Inventory API integration (6 fields)
-  - Credits API integration (2 fields)
-  - Merge functionality
+  - Azure Resource Graph integration
+  - Credits API integration
   - 8/12 fields available
 
 ---
 
 **Documentation Files:**
-- README.md - Technical documentation
+- README.md - Technical documentation and API reference
+- scripts/README.md - Script usage and workflow diagram
+- docs/ENTRA-APP-SETUP.md - Service principal setup guide
 - EXECUTIVE_SUMMARY.md - Executive summary
 - GITHUB_CHECKLIST.md - Implementation guide
+- USAGE_INSTRUCTIONS.md - User guide
 
-**Last Updated**: January 11, 2026
+**Last Updated**: January 30, 2026

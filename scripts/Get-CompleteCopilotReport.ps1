@@ -4,67 +4,66 @@
     
 .DESCRIPTION
     Retrieves comprehensive agent data from multiple sources:
-    - Azure Resource Graph: Agent metadata (name, environment, owner, timestamps) using direct KQL
+    - Power Platform Admin API: Environments metadata
+    - Dataverse API: Agent metadata (name, environment, owner, timestamps, solution ID)
     - Licensing API: Credits consumption (billed and non-billed) with 365-day lookback
-    - Dataverse (Optional): Solution ID, Agent Description (per environment)
     
-    Returns 8 of 12 requested fields in a single CSV report with automatic authentication handling.
+    Returns comprehensive agent data in a single CSV report with automatic authentication handling.
     
     Uses Azure Resource Graph API with direct KQL queries (official Microsoft API) instead of
     the Power Platform Inventory API which has recent issues with KQLOM JSON format.
     
 .PARAMETER TenantId
-    Azure AD Tenant ID (auto-detected from token if not provided)
-    Default: b22f8675-8375-455b-941a-67bee4cf7747
+    Azure AD Tenant ID (required)
+    Default: f33d7d7f-d7a8-49c9-9dfe-af8c9ca30123
+    
+.PARAMETER ClientId
+    Azure AD Application (Client) ID for service principal authentication
+    Required for unattended execution
+    
+.PARAMETER ClientSecret
+    Azure AD Application Client Secret for service principal authentication
+    Required for unattended execution
     
 .PARAMETER LookbackDays
     Number of days to look back for credits consumption data
     Default: 365 days (recommended for complete historical data)
     
-.PARAMETER IncludeDataverse
-    Switch to include Solution ID and Description from Dataverse (experimental)
-    Requires per-environment authentication and correct region URLs
+.EXAMPLE
+    .\Get-CompleteCopilotReport.ps1 -ClientId "<app-id>" -ClientSecret "<secret>"
+    Generates complete report using 365-day lookback
     
 .EXAMPLE
-    .\Get-CompleteCopilotReport.ps1
-    Generates complete report with 8 fields using 365-day lookback
-    
-.EXAMPLE
-    .\Get-CompleteCopilotReport.ps1 -LookbackDays 90
+    .\Get-CompleteCopilotReport.ps1 -ClientId "<app-id>" -ClientSecret "<secret>" -LookbackDays 90
     Generates report with 90-day credits lookback
-    
-.EXAMPLE
-    .\Get-CompleteCopilotReport.ps1 -IncludeDataverse
-    Generates report with optional Dataverse fields (10 fields total)
     
 .NOTES
     Version: 1.0
     Author: Agent Custom Report Solution
     Last Updated: 2026-01-16
     
-    Authentication: OAuth 2.0 Device Code Flow (2 authentications required)
-    - Azure Resource Graph: https://management.azure.com scope
+    Authentication: OAuth 2.0 Client Credentials Flow (unattended)
     - Licensing API: https://licensing.powerplatform.microsoft.com scope
-    - Dataverse (optional): Per-environment authentication
+    - Dataverse: https://api.crm.dynamics.com scope
+    
+    Required Service Principal Permissions:
+    - Power Platform: Power Platform Administrator role
     
     Output: CopilotAgents_CompleteReport_TIMESTAMP.csv
 #>
-    Number of days for credits historical data (default: 365)
-    
-.PARAMETER IncludeDataverse
-    Attempt to retrieve Solution ID and Description from Dataverse (slower, requires permissions)
-    
-.EXAMPLE
-    .\Get-CompleteCopilotReport.ps1
-    
-.EXAMPLE
-    .\Get-CompleteCopilotReport.ps1 -LookbackDays 90 -IncludeDataverse
-#>
 
 param(
-    [string]$TenantId = "b22f8675-8375-455b-941a-67bee4cf7747",
-    [int]$LookbackDays = 365,
-    [switch]$IncludeDataverse = $false
+    [Parameter(Mandatory=$false)]
+    [string]$TenantId,
+    
+    [Parameter(Mandatory=$false)]
+    [string]$ClientId,
+    
+    [Parameter(Mandatory=$false)]
+    [string]$ClientSecret,
+    
+    [Parameter(Mandatory=$false)]
+    [int]$LookbackDays = 365
 )
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -80,6 +79,195 @@ Write-Host @"
 "@ -ForegroundColor Cyan
 
 # ============================================================================
+# SERVICE PRINCIPAL SETUP
+# ============================================================================
+
+# Check if credentials are provided
+if (-not $ClientId -or -not $ClientSecret) {
+    Write-Host "`n⚠️  No service principal credentials provided" -ForegroundColor Yellow
+    Write-Host "`nDo you need to create a new service principal? (Y/N)" -ForegroundColor Cyan
+    $createSP = Read-Host "Choice"
+    
+    if ($createSP -eq "Y" -or $createSP -eq "y") {
+        Write-Host "`n🔧 SERVICE PRINCIPAL SETUP" -ForegroundColor Yellow
+        Write-Host "   Checking for Power Platform CLI..." -ForegroundColor Gray
+        
+        # Check if pac CLI is installed
+        $pacInstalled = $null -ne (Get-Command pac -ErrorAction SilentlyContinue)
+        
+        if (-not $pacInstalled) {
+            Write-Host "   ❌ Power Platform CLI (pac) is not installed" -ForegroundColor Red
+            Write-Host "   Installing Power Platform CLI...`n" -ForegroundColor Yellow
+            
+            # Try winget first
+            $wingetInstalled = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
+            
+            if ($wingetInstalled) {
+                Write-Host "   Using winget to install pac CLI..." -ForegroundColor Gray
+                winget install Microsoft.PowerPlatformCLI --silent --accept-source-agreements --accept-package-agreements
+                
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Host "   ✓ Power Platform CLI installed successfully" -ForegroundColor Green
+                    Write-Host "   ⚠ Please restart this PowerShell session and run the script again.`n" -ForegroundColor Yellow
+                    exit 0
+                } else {
+                    Write-Host "   ❌ Failed to install via winget" -ForegroundColor Red
+                }
+            } else {
+                Write-Host "   ❌ winget is not available" -ForegroundColor Red
+            }
+            
+            Write-Host "`nManual installation required:" -ForegroundColor Yellow
+            Write-Host "   1. Install winget: https://aka.ms/getwinget" -ForegroundColor Cyan
+            Write-Host "   2. Or download pac CLI: https://aka.ms/PowerPlatformCLI`n" -ForegroundColor Cyan
+            exit 1
+        }
+        
+        Write-Host "   ✓ Power Platform CLI found`n" -ForegroundColor Green
+        
+        # Check if authenticated
+        Write-Host "   Checking Power Platform authentication..." -ForegroundColor Gray
+        $authCheck = pac auth list 2>&1 | Out-String
+        
+        if ($authCheck -notmatch "ACTIVE") {
+            Write-Host "   ⚠ Not authenticated to Power Platform" -ForegroundColor Yellow
+            Write-Host "   Initiating authentication...`n" -ForegroundColor Gray
+            
+            pac auth create
+            
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "`n   ❌ Authentication failed" -ForegroundColor Red
+                exit 1
+            }
+        }
+        
+        Write-Host "   ✓ Authenticated to Power Platform`n" -ForegroundColor Green
+        
+        # List environments
+        Write-Host "   Fetching available environments..." -ForegroundColor Gray
+        $envList = pac admin list 2>&1 | Out-String
+        Write-Host "`n$envList" -ForegroundColor Cyan
+        
+        # Prompt for environment ID
+        Write-Host "`nEnter the Environment ID to create/register service principal:" -ForegroundColor Yellow
+        $environmentId = Read-Host "Environment ID"
+        
+        if ([string]::IsNullOrWhiteSpace($environmentId)) {
+            Write-Host "`n❌ Environment ID is required" -ForegroundColor Red
+            exit 1
+        }
+        
+        Write-Host "`n   Creating service principal for environment: $environmentId..." -ForegroundColor Gray
+        $spOutput = pac admin create-service-principal --environment $environmentId 2>&1 | Out-String
+        
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "`n   ❌ Failed to create service principal" -ForegroundColor Red
+            Write-Host "   Output: $spOutput" -ForegroundColor Red
+            exit 1
+        }
+        
+        Write-Host "`n$spOutput" -ForegroundColor Green
+        
+        # Parse output for ClientId and Secret
+        $ClientId = $null
+        $ClientSecret = $null
+        
+        if ($spOutput -match "Application \(client\) ID:\s*([a-f0-9-]+)") {
+            $ClientId = $matches[1]
+        }
+        if ($spOutput -match "Client Secret:\s*(.+)") {
+            $ClientSecret = $matches[1].Trim()
+        }
+        
+        if (-not $ClientId -or -not $ClientSecret) {
+            Write-Host "`n⚠ Could not automatically parse credentials from output." -ForegroundColor Yellow
+            Write-Host "Please copy the Application (client) ID and Client Secret from above.`n" -ForegroundColor Yellow
+            
+            $ClientId = Read-Host "Enter Application (client) ID"
+            $secureSecret = Read-Host "Enter Client Secret" -AsSecureString
+            $BSTR = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureSecret)
+            $ClientSecret = [Runtime.InteropServices.Marshal]::PtrToStringAuto($BSTR)
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($BSTR)
+        }
+        
+        Write-Host "`n╔══════════════════════════════════════════════════════════════════════╗" -ForegroundColor Green
+        Write-Host "║   SERVICE PRINCIPAL CREATED                                          ║" -ForegroundColor Green
+        Write-Host "╚══════════════════════════════════════════════════════════════════════╝" -ForegroundColor Green
+        Write-Host "`n📋 Save these credentials for future use:" -ForegroundColor Cyan
+        Write-Host "`n   Tenant ID:     $TenantId" -ForegroundColor White
+        Write-Host "   Client ID:     $ClientId" -ForegroundColor White
+        Write-Host "   Client Secret: $ClientSecret" -ForegroundColor White
+        Write-Host "`n💡 Future runs can use these credentials:" -ForegroundColor Yellow
+        Write-Host "   .\Get-CompleteCopilotReport.ps1 ``" -ForegroundColor Gray
+        Write-Host "       -TenantId `"$TenantId`" ``" -ForegroundColor Gray
+        Write-Host "       -ClientId `"$ClientId`" ``" -ForegroundColor Gray
+        Write-Host "       -ClientSecret `"$ClientSecret`"`n" -ForegroundColor Gray
+        
+        # Ask if user wants to register to additional environments
+        Write-Host "Do you want to register this service principal to additional environments? (Y/N)" -ForegroundColor Cyan
+        $registerMore = Read-Host "Choice"
+        
+        if ($registerMore -eq "Y" -or $registerMore -eq "y") {
+            Write-Host "`n📋 Registering service principal to additional environments..." -ForegroundColor Yellow
+            
+            # List environments again
+            Write-Host "   Available environments:" -ForegroundColor Gray
+            $envList = pac admin list 2>&1 | Out-String
+            Write-Host "`n$envList" -ForegroundColor Cyan
+            
+            $continueRegistering = $true
+            while ($continueRegistering) {
+                Write-Host "`nEnter Environment ID (or press Enter to finish):" -ForegroundColor Yellow
+                $additionalEnvId = Read-Host "Environment ID"
+                
+                if ([string]::IsNullOrWhiteSpace($additionalEnvId)) {
+                    $continueRegistering = $false
+                    break
+                }
+                
+                Write-Host "   Registering service principal to environment: $additionalEnvId..." -ForegroundColor Gray
+                $additionalOutput = pac admin create-service-principal --environment $additionalEnvId 2>&1 | Out-String
+                
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Host "   ✓ Successfully registered to environment: $additionalEnvId" -ForegroundColor Green
+                } else {
+                    Write-Host "   ⚠ Failed to register to environment: $additionalEnvId" -ForegroundColor Yellow
+                    Write-Host "   Error: $additionalOutput" -ForegroundColor Red
+                }
+                
+                Write-Host "`nRegister to another environment? (Y/N)" -ForegroundColor Cyan
+                $continueChoice = Read-Host "Choice"
+                if ($continueChoice -ne "Y" -and $continueChoice -ne "y") {
+                    $continueRegistering = $false
+                }
+            }
+            
+            Write-Host "`n✅ Service principal registration complete`n" -ForegroundColor Green
+        }
+        
+        Write-Host "Press any key to continue with report generation..." -ForegroundColor Cyan
+        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        Write-Host ""
+        
+    } else {
+        Write-Host "`n❌ Service principal credentials are required" -ForegroundColor Red
+        Write-Host "`nOptions:" -ForegroundColor Yellow
+        Write-Host "   1. Run the script again and choose 'Y' to create a service principal" -ForegroundColor Cyan
+        Write-Host "   2. Provide existing credentials:" -ForegroundColor Cyan
+        Write-Host "      .\Get-CompleteCopilotReport.ps1 -TenantId `"..`" -ClientId `"..`" -ClientSecret `"..`"`n" -ForegroundColor Gray
+        exit 1
+    }
+}
+
+# Use these credentials for Dataverse as well
+$DataverseTenantId = $TenantId
+$DataverseClientId = $ClientId
+$DataverseClientSecret = $ClientSecret
+
+Write-Host "✅ Using service principal credentials" -ForegroundColor Green
+Write-Host "   Client ID: $ClientId`n" -ForegroundColor Cyan
+
+# ============================================================================
 # AUTHENTICATION FUNCTIONS
 # ============================================================================
 
@@ -91,111 +279,214 @@ function Get-AuthToken {
     
     Write-Host "`n🔐 Authenticating to $DisplayName..." -ForegroundColor Yellow
     
-    $clientId = "51f81489-12ee-4a9e-aaae-a2591f45987d"
-    
-    # Use tenant ID if available, otherwise use "organizations"
-    $authEndpoint = if ($script:TenantId) { $script:TenantId } else { "organizations" }
+    $tokenUrl = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token"
     
     $body = @{
-        client_id = $clientId
-        scope     = "$Resource/.default offline_access"
+        client_id     = $ClientId
+        client_secret = $ClientSecret
+        scope         = "$Resource/.default"
+        grant_type    = "client_credentials"
     }
     
     try {
-        $deviceCode = Invoke-RestMethod -Uri "https://login.microsoftonline.com/$authEndpoint/oauth2/v2.0/devicecode" -Method POST -Body $body
-        
-        Write-Host "`n  ╔═══════════════════════════════════════════════════════════════╗" -ForegroundColor Yellow
-        Write-Host "  ║  Open: https://microsoft.com/devicelogin" -ForegroundColor Yellow
-        Write-Host "  ║  Code: $($deviceCode.user_code)" -ForegroundColor Green
-        Write-Host "  ╚═══════════════════════════════════════════════════════════════╝" -ForegroundColor Yellow
-        
-        Start-Process "https://microsoft.com/devicelogin"
-        Read-Host "`n  Press ENTER after completing login"
-        
-        $tokenBody = @{
-            grant_type  = "urn:ietf:params:oauth:grant-type:device_code"
-            client_id   = $clientId
-            device_code = $deviceCode.device_code
-        }
-        
-        $response = Invoke-RestMethod -Uri "https://login.microsoftonline.com/$authEndpoint/oauth2/v2.0/token" -Method POST -Body $tokenBody
-        Write-Host "   ✓ Authenticated to $DisplayName`n" -ForegroundColor Green
-        
-        # Auto-detect tenant if not provided (for first authentication)
-        if (-not $script:TenantId -and $response.id_token) {
-            try {
-                $tokenParts = $response.id_token.Split('.')
-                $payload = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($tokenParts[1] + "=="))
-                $claims = $payload | ConvertFrom-Json
-                $script:TenantId = $claims.tid
-                Write-Host "   ℹ Auto-detected Tenant ID: $($script:TenantId)" -ForegroundColor Gray
-            }
-            catch {
-                Write-Host "   ⚠ Could not auto-detect tenant ID" -ForegroundColor Yellow
-            }
-        }
+        $response = Invoke-RestMethod -Uri $tokenUrl -Method POST -Body $body -ContentType "application/x-www-form-urlencoded"
+        Write-Host "   ✓ Authenticated to $DisplayName (expires in $($response.expires_in)s)`n" -ForegroundColor Green
         
         return $response.access_token
     }
     catch {
         Write-Host "   ❌ Authentication failed: $($_.Exception.Message)" -ForegroundColor Red
+        if ($_.ErrorDetails.Message) {
+            Write-Host "   Response: $($_.ErrorDetails.Message)" -ForegroundColor Red
+        }
         throw
     }
 }
 
 # ============================================================================
-# STEP 1: AZURE RESOURCE GRAPH - GET ALL AGENTS
+# STEP 1: POWER PLATFORM - GET ALL AGENTS
 # ============================================================================
 
-function Get-AllAgents {
+function Get-DataverseToken {
+    param(
+        [string]$Resource,
+        [string]$DisplayUrl
+    )
+    
+    $tokenUrl = "https://login.microsoftonline.com/$DataverseTenantId/oauth2/v2.0/token"
+    $scope = "$Resource/.default"
+    
+    $body = @{
+        client_id     = $DataverseClientId
+        client_secret = $DataverseClientSecret
+        scope         = $scope
+        grant_type    = "client_credentials"
+    }
+    
+    try {
+        $response = Invoke-RestMethod -Uri $tokenUrl -Method POST -Body $body -ContentType "application/x-www-form-urlencoded"
+        return $response.access_token
+    }
+    catch {
+        return $null
+    }
+}
+
+function Get-AllAgentsViaPowerPlatform {
     param([string]$Token)
     
-    Write-Host "📦 STEP 1: Retrieving agents from Azure Resource Graph..." -ForegroundColor Cyan
+    Write-Host "📦 STEP 1: Retrieving agents via Power Platform Admin API..." -ForegroundColor Cyan
+    Write-Host "   ℹ️ Using Power Platform API (better service principal support)" -ForegroundColor Gray
     
     $headers = @{
         "Authorization" = "Bearer $Token"
         "Content-Type"  = "application/json"
+        "Accept"        = "application/json"
     }
     
-    $url = "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2021-03-01"
-    
-    # Direct KQL query (the working method!)
-    $query = @{
-        query = @"
-PowerPlatformResources
-| where type == 'microsoft.copilotstudio/agents'
-| take 1000
-"@
-    }
+    $allAgents = @()
     
     try {
-        # Execute query
-        $response = Invoke-RestMethod -Uri $url -Method POST -Headers $headers -Body ($query | ConvertTo-Json)
-        $agentData = $response.data
+        # First, get all environments
+        Write-Host "   🌍 Fetching Power Platform environments..." -ForegroundColor Gray
+        $envUrl = "https://api.bap.microsoft.com/providers/Microsoft.BusinessAppPlatform/scopes/admin/environments?api-version=2020-10-01"
+        $envResponse = Invoke-RestMethod -Uri $envUrl -Method GET -Headers $headers
+        $environments = $envResponse.value
         
-        # Process agents
-        $agents = $agentData | ForEach-Object {
-            $props = $_.properties
+        Write-Host "   ✓ Found $($environments.Count) environments`n" -ForegroundColor Green
+        
+        # For each environment, get Copilot Studio agents
+        $envCount = 0
+        foreach ($env in $environments) {
+            $envCount++
+            $envId = $env.name
+            $envName = $env.properties.displayName
             
-            [PSCustomObject]@{
-                AgentId           = $_.name
-                AgentName         = $props.displayName
-                EnvironmentId     = $props.environmentId
-                EnvironmentName   = $props.environmentId  # Will get environment details separately if needed
-                EnvironmentType   = "Unknown"  # Azure Resource Graph doesn't join automatically
-                EnvironmentRegion = $_.location
-                CreatedOn         = if ($props.createdAt) { (Get-Date $props.createdAt).ToString("yyyy-MM-dd HH:mm:ss") } else { $null }
-                ModifiedOn        = $null  # Not available in Resource Graph
-                PublishedOn       = if ($props.lastPublishedAt) { (Get-Date $props.lastPublishedAt).ToString("yyyy-MM-dd HH:mm:ss") } else { $null }
-                Owner             = $props.ownerId
-                CreatedIn         = if ($props.createdIn) { $props.createdIn } else { "Copilot Studio" }
-                SolutionId        = $null  # To be filled from Dataverse
-                Description       = $null  # To be filled from Dataverse
+            Write-Host "   [$envCount/$($environments.Count)] $envName" -ForegroundColor Gray
+            
+            try {
+                # Get Dataverse-specific token for this environment
+                $instanceUrl = $env.properties.linkedEnvironmentMetadata.instanceUrl
+                if (-not $instanceUrl) {
+                    Write-Host "      ⚠ No Dataverse URL available" -ForegroundColor Yellow
+                    continue
+                }
+                
+                # Extract base Dataverse URL and remove .api. subdomain
+                # Convert: https://org123.api.crm.dynamics.com -> https://org123.crm.dynamics.com
+                $dataverseResource = $instanceUrl -replace '/+$', ''  # Remove trailing slash
+                $dataverseResource = $dataverseResource -replace '\.api\.', '.'  # Remove .api. subdomain
+                
+                $dataverseToken = Get-DataverseToken -Resource $dataverseResource -DisplayUrl $instanceUrl
+                
+                if (-not $dataverseToken) {
+                    continue
+                }
+                
+                # Use Dataverse-specific token
+                $dataverseHeaders = @{
+                    "Authorization" = "Bearer $dataverseToken"
+                    "Accept"        = "application/json"
+                    "OData-MaxVersion" = "4.0"
+                    "OData-Version" = "4.0"
+                    "Prefer" = 'odata.include-annotations="OData.Community.Display.V1.FormattedValue"'
+                }
+                
+                # Query bots from Dataverse (matching working app pattern)
+                $dataverseUrl = "$dataverseResource/api/data/v9.2/bots?`$select=botid,name,schemaname,runtimeprovider,publishedon,statecode,statuscode,_ownerid_value,_createdby_value,createdon,modifiedon,solutionid&`$orderby=name asc"
+                
+                $agentResponse = Invoke-RestMethod -Uri $dataverseUrl -Method GET -Headers $dataverseHeaders -ErrorAction Stop
+                
+                if ($agentResponse.value) {
+                    Write-Host "      ✓ Found $($agentResponse.value.Count) agents" -ForegroundColor Green
+                    
+                    # Get system users to map created by IDs to full names
+                    $userLookup = @{}
+                    try {
+                        $usersUrl = "$dataverseResource/api/data/v9.2/systemusers?`$select=systemuserid,fullname"
+                        $usersResponse = Invoke-RestMethod -Uri $usersUrl -Method GET -Headers $dataverseHeaders -ErrorAction SilentlyContinue
+                        
+                        if ($usersResponse.value) {
+                            foreach ($user in $usersResponse.value) {
+                                if ($user.systemuserid) {
+                                    $userLookup[$user.systemuserid] = $user.fullname
+                                }
+                            }
+                        }
+                    }
+                    catch {
+                        # Silently continue if users can't be retrieved
+                    }
+                    
+                    foreach ($agent in $agentResponse.value) {
+                        # Get bot components for this agent
+                        $componentCount = 0
+                        $components = @()
+                        try {
+                            $componentsUrl = "$dataverseResource/api/data/v9.2/botcomponents?`$select=botcomponentid,name,componenttype,category,language,description,content,data&`$filter=_parentbotid_value eq '$($agent.botid)'&`$orderby=name asc"
+                            $componentsResponse = Invoke-RestMethod -Uri $componentsUrl -Method GET -Headers $dataverseHeaders -ErrorAction SilentlyContinue
+                            
+                            if ($componentsResponse.value) {
+                                $componentCount = $componentsResponse.value.Count
+                                $components = $componentsResponse.value
+                            }
+                        }
+                        catch {
+                            # Silently continue if components can't be retrieved
+                        }
+                        
+                        # Resolve owner name from user lookup (using createdby)
+                        $ownerName = if ($agent._createdby_value -and $userLookup.ContainsKey($agent._createdby_value)) {
+                            $userLookup[$agent._createdby_value]
+                        } else {
+                            $agent._createdby_value  # Fallback to ID if name not found
+                        }
+                        
+                        $allAgents += [PSCustomObject]@{
+                            AgentId           = $agent.botid
+                            AgentName         = $agent.name
+                            EnvironmentId     = $envId
+                            EnvironmentName   = $envName
+                            EnvironmentRegion = $env.location
+                            CreatedOn         = if ($agent.createdon) { (Get-Date $agent.createdon).ToString("yyyy-MM-dd HH:mm:ss") } else { $null }
+                            ModifiedOn        = if ($agent.modifiedon) { (Get-Date $agent.modifiedon).ToString("yyyy-MM-dd HH:mm:ss") } else { $null }
+                            PublishedOn       = if ($agent.publishedon) { (Get-Date $agent.publishedon).ToString("yyyy-MM-dd HH:mm:ss") } else { $null }
+                            OwnerId           = $agent._ownerid_value
+                            Owner             = $ownerName
+                            CreatedIn         = "Copilot Studio"
+                            SolutionId        = $agent.solutionid
+                            Description       = $null
+                            SchemaName        = $agent.schemaname
+                            RuntimeProvider   = $agent.runtimeprovider
+                            StateCode         = $agent.statecode
+                            StatusCode        = $agent.statuscode
+                            ComponentCount    = $componentCount
+                            Components        = $components
+                        }
+                    }
+                }
+            }
+            catch {
+                $statusCode = $_.Exception.Response.StatusCode.value__
+                
+                # Handle 403 Forbidden - Service Principal doesn't have access
+                if ($statusCode -eq 403) {
+                    Write-Host "      ⚠ The Service Principal doesn't have access to $envName ($instanceUrl)" -ForegroundColor Yellow
+                }
+                # Show detailed error for 400 Bad Request
+                elseif ($statusCode -eq 400 -and $_.ErrorDetails.Message) {
+                    Write-Host "      ⚠ Error ($statusCode): $($_.Exception.Message)" -ForegroundColor Yellow
+                    Write-Host "        Details: $($_.ErrorDetails.Message)" -ForegroundColor Red
+                }
+                # Generic error handling
+                else {
+                    Write-Host "      ⚠ Error ($statusCode): $($_.Exception.Message)" -ForegroundColor Yellow
+                }
             }
         }
         
-        Write-Host "   ✓ Retrieved $($agents.Count) agents`n" -ForegroundColor Green
-        return $agents
+        Write-Host "`n   ✓ Retrieved $($allAgents.Count) agents total`n" -ForegroundColor Green
+        return $allAgents
     }
     catch {
         Write-Host "   ❌ Error: $($_.Exception.Message)" -ForegroundColor Red
@@ -274,68 +565,7 @@ function Get-CreditsData {
 }
 
 # ============================================================================
-# STEP 3: DATAVERSE - GET SOLUTION ID & DESCRIPTION (OPTIONAL)
-# ============================================================================
-
-function Get-DataverseData {
-    param(
-        [string]$Token,
-        [array]$Agents
-    )
-    
-    if (-not $IncludeDataverse) {
-        Write-Host "⏭️  STEP 3: Skipping Dataverse queries (use -IncludeDataverse to enable)`n" -ForegroundColor Yellow
-        return @{}
-    }
-    
-    Write-Host "🗄️  STEP 3: Retrieving Solution ID from Dataverse..." -ForegroundColor Cyan
-    Write-Host "   ⚠️ This may take several minutes (per-environment authentication required)" -ForegroundColor Yellow
-    Write-Host ""
-    
-    $headers = @{
-        "Authorization" = "Bearer $Token"
-        "Accept"        = "application/json"
-        "OData-MaxVersion" = "4.0"
-        "OData-Version" = "4.0"
-    }
-    
-    $dataverseLookup = @{}
-    $environments = $Agents | Select-Object EnvironmentId, EnvironmentName -Unique
-    $envCount = 0
-    
-    foreach ($env in $environments) {
-        $envCount++
-        Write-Host "   [$envCount/$($environments.Count)] $($env.EnvironmentName)" -ForegroundColor Gray
-        
-        # Construct Dataverse URL for the environment
-        $dataverseUrl = "https://$($env.EnvironmentId).crm.dynamics.com/api/data/v9.2/bots?`$select=botid,name,solutionid,description,schemaname"
-        
-        try {
-            $response = Invoke-RestMethod -Uri $dataverseUrl -Method GET -Headers $headers
-            
-            if ($response.value) {
-                Write-Host "      ✓ Retrieved $($response.value.Count) bot records" -ForegroundColor Green
-                
-                foreach ($bot in $response.value) {
-                    $dataverseLookup[$bot.botid] = @{
-                        SolutionId = $bot.solutionid
-                        Description = $bot.description
-                        SchemaName = $bot.schemaname
-                    }
-                }
-            }
-        }
-        catch {
-            Write-Host "      ⚠ Access denied or environment unavailable: $($_.Exception.Message)" -ForegroundColor Yellow
-        }
-    }
-    
-    Write-Host "`n   ✓ Dataverse data collected for $($dataverseLookup.Count) agents`n" -ForegroundColor Green
-    return $dataverseLookup
-}
-
-# ============================================================================
-# STEP 4: MERGE ALL DATA
+# STEP 3: MERGE ALL DATA
 # ============================================================================
 
 function Merge-AllData {
@@ -366,9 +596,9 @@ function Merge-AllData {
             "Agent Description"     = $description
             "Environment ID"        = $agent.EnvironmentId
             "Environment Name"      = $agent.EnvironmentName
-            "Environment Type"      = $agent.EnvironmentType
             "Environment Region"    = $agent.EnvironmentRegion
-            "Solution ID"           = $solutionId
+            "Solution ID"           = $agent.SolutionId
+            "Owner ID"              = $agent.OwnerId
             "Owner"                 = $agent.Owner
             "Created On"            = $agent.CreatedOn
             "Modified On"           = $agent.ModifiedOn
@@ -392,12 +622,12 @@ function Merge-AllData {
 try {
     $startTime = Get-Date
     
-    # Step 1: Authenticate to Azure Resource Graph and get agents
-    $azureToken = Get-AuthToken -Resource "https://management.azure.com" -DisplayName "Azure Resource Graph"
-    $agents = Get-AllAgents -Token $azureToken
+    # Step 1: Authenticate to Power Platform and get agents
+    $ppToken = Get-AuthToken -Resource "https://api.bap.microsoft.com" -DisplayName "Power Platform Admin API"
+    $agents = Get-AllAgentsViaPowerPlatform -Token $ppToken
     
     if ($agents.Count -eq 0) {
-        throw "No agents found in Azure Resource Graph"
+        throw "No agents found via Power Platform API"
     }
     
     # Step 2: Get credits
@@ -406,19 +636,20 @@ try {
     $fromDate = $toDate.AddDays(-$LookbackDays)
     $creditsLookup = Get-CreditsData -Token $licensingToken -Agents $agents -FromDate $fromDate -ToDate $toDate
     
-    # Step 3: Get Dataverse data (optional)
-    $dataverseLookup = @{}
-    if ($IncludeDataverse) {
-        $dataverseToken = Get-AuthToken -Resource "https://api.crm.dynamics.com" -DisplayName "Dataverse"
-        $dataverseLookup = Get-DataverseData -Token $dataverseToken -Agents $agents
+    # Step 3: Merge everything
+    $completeReport = Merge-AllData -Agents $agents -CreditsLookup $creditsLookup -DataverseLookup @{}
+    
+    # Create Reports directory if it doesn't exist
+    $reportsDir = Join-Path $scriptDir "Reports"
+    if (-not (Test-Path $reportsDir)) {
+        Write-Host "`n📁 Creating Reports directory..." -ForegroundColor Gray
+        New-Item -Path $reportsDir -ItemType Directory -Force | Out-Null
+        Write-Host "   ✓ Reports directory created: $reportsDir`n" -ForegroundColor Green
     }
     
-    # Step 4: Merge everything
-    $completeReport = Merge-AllData -Agents $agents -CreditsLookup $creditsLookup -DataverseLookup $dataverseLookup
-    
-    # Export to CSV
+    # Export to CSV in Reports directory
     $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-    $outputFile = Join-Path $scriptDir "CopilotAgents_CompleteReport_${timestamp}.csv"
+    $outputFile = Join-Path $reportsDir "CopilotAgents_CompleteReport_${timestamp}.csv"
     $completeReport | Export-Csv -Path $outputFile -NoTypeInformation -Encoding UTF8
     
     # Summary
@@ -438,10 +669,7 @@ try {
     Write-Host "📊 Summary:" -ForegroundColor Cyan
     Write-Host "   Total Agents: $($completeReport.Count)" -ForegroundColor White
     Write-Host "   Agents with Usage: $withUsage" -ForegroundColor White
-    if ($IncludeDataverse) {
-        Write-Host "   Agents with Solution ID: $withSolutionId" -ForegroundColor White
-        Write-Host "   Agents with Description: $withDescription" -ForegroundColor White
-    }
+    Write-Host "   Agents with Solution ID: $withSolutionId" -ForegroundColor White
     Write-Host ""
     Write-Host "💰 Credits:" -ForegroundColor Cyan
     Write-Host "   Billed: $([math]::Round($totalBilled, 2)) MB" -ForegroundColor White
@@ -449,17 +677,8 @@ try {
     Write-Host "   Total: $([math]::Round($totalBilled + $totalNonBilled, 2)) MB" -ForegroundColor White
     Write-Host ""
     Write-Host "📝 Fields Retrieved:" -ForegroundColor Cyan
-    if ($IncludeDataverse -and $withSolutionId -gt 0) {
-        Write-Host "   ✅ 10 of 12 fields (Agent Description & Solution ID from Dataverse)" -ForegroundColor Green
-        Write-Host "   ❌ Active Users (not available in any API)" -ForegroundColor Yellow
-        Write-Host "   ❌ Schema Name (optional field)" -ForegroundColor Yellow
-    }
-    else {
-        Write-Host "   ✅ 8 of 12 fields (Inventory + Licensing APIs)" -ForegroundColor Green
-        Write-Host "   ⏭️  2 fields skipped (use -IncludeDataverse for Solution ID & Description)" -ForegroundColor Yellow
-        Write-Host "   ❌ Active Users (not available in any API)" -ForegroundColor Yellow
-        Write-Host "   ❌ Schema Name (optional field)" -ForegroundColor Yellow
-    }
+    Write-Host "   ✅ All available fields from Power Platform Admin API and Dataverse" -ForegroundColor Green
+    Write-Host "   ❌ Active Users (not available in any API)" -ForegroundColor Yellow
     Write-Host ""
     Write-Host "💾 Report saved: $(Split-Path $outputFile -Leaf)" -ForegroundColor Cyan
     Write-Host "   Location: $scriptDir" -ForegroundColor Gray
