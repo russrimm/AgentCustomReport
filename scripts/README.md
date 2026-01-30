@@ -102,7 +102,7 @@ flowchart TD
 
 **Automated mode** (with existing credentials):
 ```powershell
-.\Get-CompleteCopilotReport.ps1 -TenantId "..." -ClientId "..." -ClientSecret "..."
+.\Get-CompleteCopilotReport.ps1 -TenantId "" -ClientId "" -ClientSecret ""
 ```
 
 **Output:** `CopilotAgents_CompleteReport_YYYYMMDD_HHMMSS.csv` with comprehensive agent data
