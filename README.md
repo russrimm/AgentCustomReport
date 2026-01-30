@@ -140,47 +140,12 @@ Comprehensive script with automated service principal setup that retrieves all a
 - Credits consumption (billed + non-billed)
 - Execution summary with statistics
 
-**Setup Documentation**: See [docs/ENTRA-APP-SETUP.md](docs/ENTRA-APP-SETUP.md) for detailed setup guide
-
-### Legacy Scripts (Optional - Individual Components)
-
-<details>
-<summary>Click to expand legacy scripts</summary>
-
-#### Get-AllAgents-InventoryAPI-v2.ps1
-Original script using Power Platform Inventory API (Note: KQLOM format may be deprecated).
-
-**Note**: This script may fail due to recent API changes. Use `Get-CompleteCopilotReport.ps1` instead.
-
-#### Get-CopilotCredits-v2.ps1
-Standalone credits retrieval using the Licensing API.
-
-**Parameters**:
-- `-TenantId`: Azure AD Tenant ID
-- `-LookbackDays`: Number of days (default: 365)
-
-**Usage**:
-```powershell
-.\Get-CopilotCredits-v2.ps1 -LookbackDays 365
-```
-
-#### Merge-InventoryAndCredits.ps1
-Merges separately generated Inventory and Credits CSV files.
-
-**Usage**:
-```powershell
-.\Merge-InventoryAndCredits.ps1
-```
-
-</details>
+**Setup Documentation**: See [USAGE_INSTRUCTIONS.md](USAGE_INSTRUCTIONS.md) for detailed setup guide
 
 ## Prerequisites
 
-- PowerShell 5.1 or higher
+- PowerShell 7 or higher
 - Power Platform admin access
-- Permissions to authenticate to:
-  - `https://api.powerplatform.com`
-  - `https://licensing.powerplatform.microsoft.com`
 
 ## Authentication
 
@@ -203,13 +168,6 @@ Uses **OAuth 2.0 Client Credentials Flow** with service principal:
 - No user interaction required (suitable for automation)
 
 **Required Role**: Power Platform Administrator (for service principal creation)
-
-### Legacy Scripts - Device Code Flow
-Older scripts use **OAuth 2.0 Device Code Flow**:
-1. Script displays a device code
-2. Browser opens to `https://microsoft.com/devicelogin`
-3. Enter the code and authenticate
-4. Script continues after authentication
 
 ## Workflow
 
@@ -238,29 +196,7 @@ This handles everything automatically:
 5. Merges all datasets (agents + environments + owners + credits)
 6. Generates timestamped CSV report with execution summary
 
-### Alternative: Legacy 3-Step Process
-
-<details>
-<summary>Click for manual 3-step workflow</summary>
-
-1. **Run Inventory API script**:
-   ```powershell
-   .\Get-AllAgents-InventoryAPI-v2.ps1
    ```
-
-2. **Run Credits API script**:
-   ```powershell
-   .\Get-CopilotCredits-v2.ps1
-   ```
-
-3. **Merge the datasets**:
-   ```powershell
-   .\Merge-InventoryAndCredits.ps1
-   ```
-
-**Note**: The Inventory API script may fail due to recent API changes. Use the comprehensive script instead.
-
-</details>
 
 ## Limitations & Considerations
 
@@ -287,100 +223,6 @@ This handles everything automatically:
    - Historical data limited to lookback period
    - Licensing API is undocumented (v0.1-alpha) and may change
 
-### Tested but Non-Working Approaches
-
-The following approaches were tested but did not provide the required data:
-
-1. **Power Platform Inventory API (KQLOM JSON format)**
-   - Initially worked, then broke with API changes
-   - Returns "KQLOM format is wrong or it cannot be null" error
-   - Microsoft documentation examples also fail
-   - **Solution**: Switched to Azure Resource Graph with direct KQL
-
-2. **Official Licensing API** (`/entitlements/MCSMessages/summary`)
-   - Returns license capacity (50,000 messages)
-   - Does NOT return actual consumption data
-
-3. **Microsoft.PowerPlatform.SDK**
-   - .NET SDK does not expose credits/consumption APIs
-   - Compilation issues with current SDK version
-
-4. **PPAC Export API** (`/api/PowerPlatform/Environment/Export`)
-   - Returns 405 Method Not Allowed
-   - Not accessible via public authentication
-
-## Testing Results
-
-### Date Range Impact (Credits API)
-| Range | Resources Found | Billed (MB) | Non-Billed (MB) | Total (MB) |
-|-------|----------------|-------------|-----------------|------------|
-| No dates | 0 | 0 | 0 | 0 |
-| 7 days | 0 | 0 | 0 | 0 |
-| 30 days | 10 | 14.38 | 98.16 | 112.54 |
-| 60 days | 10 | 14.38 | 98.16 | 112.54 |
-| 90 days | 10 | 14.38 | 98.16 | 112.54 |
-| **365 days** | **29** | **665.58** | **829.81** | **1495.39** |
-
-**Recommendation**: Use 365-day lookback for complete historical data.
-
-### Actual Test Results
-- **Total Agents**: 115 (Inventory API)
-- **Agents with Usage**: 34 (Credits API)
-- **Agents without Usage**: 81
-- **Total Consumption**: 5,505.82 MB (3,479.58 billed + 2,026.24 non-billed)
-- **Environments**: 8
-
-## Troubleshooting
-
-### Script Errors
-
-**400 Bad Request (Inventory API)**
-- Ensure query format matches exact schema
-- Do not add `-ContentType` parameter separately (already in headers)
-
-**Empty Results (Credits API)**
-- Ensure `fromDate` and `toDate` parameters are included
-- Use `MM-DD-YYYY` format
-- Try increasing lookback days to 365
-
-**Authentication Fails**
-- Ensure you have Power Platform admin access
-- Check if conditional access policies are blocking device code flow
-- Try using a different browser for authentication
-
-### Common Issues
-
-1. **Credits API returns 404**
-   - This is a v0.1-alpha endpoint (unsupported)
-   - Endpoint may change without notice
-   - Verify endpoint URL matches current PPAC behavior
-
-2. **Different agent counts**
-   - Inventory API: Returns ALL agents (115)
-   - Credits API: Returns only agents with usage (34)
-   - This is expected behavior
-
-3. **Date range confusion**
-   - Credits API requires explicit date parameters
-   - Default script uses 365-day lookback
-   - Adjust `-LookbackDays` parameter as needed
-
-## Data Structure
-
-### Complete Report Schema
-```csv
-Agent ID, Agent Name, Environment, Environment ID, Environment Type, 
-Environment Region, Created On, Modified On, Published On, Owner, 
-Created In, Billed Credits (MB), Non-Billed Credits (MB), 
-Total Credits (MB), Has Usage
-```
-
-### Credits Breakdown
-Credits are tracked per:
-- **Channel**: M365 Copilot, Teams, Autonomous
-- **Feature**: Classic answer, Agent flow actions, Text and generative AI tools
-- **Type**: Billed vs Non-billable
-
 ## Important Disclaimers
 
 ⚠️ **Licensing API Status**
@@ -399,58 +241,5 @@ Credits are tracked per:
 - No official SLA or support from Microsoft
 - Rate limiting unknown (not documented)
 - Tenant-specific data only (no cross-tenant queries)
-
-## Future Improvements
-
-To achieve 12/12 fields, the following would be required:
-
-1. **Dataverse Direct Query** for Solution ID
-   - Requires per-environment authentication
-   - Query: `dataverse://environments/{env}/tables/bot/rows/{agentId}?columns=solutionid`
-
-2. **Agent Description** 
-   - No known API endpoint
-   - May require Microsoft to expose this field in Inventory API
-
-3. **Active Users**
-   - No known API endpoint
-   - Would require Microsoft Analytics API enhancement
-
-## Support
-
-This is a community solution based on reverse-engineered APIs. For official support:
-- Power Platform Admin Center: https://admin.powerplatform.microsoft.com
-- Power Platform API documentation: https://learn.microsoft.com/power-platform/admin/
-
-## License
-
-MIT License - Use at your own risk
-
-## Version History
-
-- **v2.0** (2026-01-30): Service principal automation and complete field coverage
-  - Automated service principal creation via pac CLI
-  - Power Platform Admin API integration
-  - Dataverse API per-environment queries
-  - 12/12 fields available (all requested fields except Active Users)
-  - Multi-environment registration support
-  - Zero-parameter interactive setup
-  - Removed Environment Type column (was always blank)
-  - Fixed error handling and SecureString conversion issues
-
-- **v1.0** (2026-01-11): Initial release
-  - Azure Resource Graph integration
-  - Credits API integration
-  - 8/12 fields available
-
----
-
-**Documentation Files:**
-- README.md - Technical documentation and API reference
-- scripts/README.md - Script usage and workflow diagram
-- docs/ENTRA-APP-SETUP.md - Service principal setup guide
-- EXECUTIVE_SUMMARY.md - Executive summary
-- GITHUB_CHECKLIST.md - Implementation guide
-- USAGE_INSTRUCTIONS.md - User guide
 
 **Last Updated**: January 30, 2026
