@@ -85,6 +85,19 @@ Write-Host @"
 # Check if credentials are provided
 if (-not $ClientId -or -not $ClientSecret) {
     Write-Host "`n⚠️  No service principal credentials provided" -ForegroundColor Yellow
+    
+    # Prompt for TenantId if not provided
+    if (-not $TenantId) {
+        Write-Host "`n📋 Enter your Azure AD Tenant ID" -ForegroundColor Cyan
+        Write-Host "   (Find this in Azure Portal → Azure Active Directory → Properties)" -ForegroundColor Gray
+        $TenantId = Read-Host "Tenant ID"
+        
+        if ([string]::IsNullOrWhiteSpace($TenantId)) {
+            Write-Host "`n❌ Tenant ID is required" -ForegroundColor Red
+            exit 1
+        }
+    }
+    
     Write-Host "`nDo you need to create a new service principal? (Y/N)" -ForegroundColor Cyan
     $createSP = Read-Host "Choice"
     
@@ -145,11 +158,14 @@ if (-not $ClientId -or -not $ClientSecret) {
         
         # List environments
         Write-Host "   Fetching available environments..." -ForegroundColor Gray
-        $envList = pac admin list 2>&1 | Out-String
-        Write-Host "`n$envList" -ForegroundColor Cyan
+        $envListRaw = pac admin list 2>&1 | Out-String
+        
+        # Display environments
+        Write-Host "`n   Available Environments:" -ForegroundColor Cyan
+        Write-Host "$envListRaw" -ForegroundColor White
         
         # Prompt for environment ID
-        Write-Host "`nEnter the Environment ID to create/register service principal:" -ForegroundColor Yellow
+        Write-Host "Enter the Environment ID to create/register service principal:" -ForegroundColor Yellow
         $environmentId = Read-Host "Environment ID"
         
         if ([string]::IsNullOrWhiteSpace($environmentId)) {
@@ -180,7 +196,6 @@ if (-not $ClientId -or -not $ClientSecret) {
         }
         
         if (-not $ClientId -or -not $ClientSecret) {
-            Write-Host "`n⚠ Could not automatically parse credentials from output." -ForegroundColor Yellow
             Write-Host "Please copy the Application (client) ID and Client Secret from above.`n" -ForegroundColor Yellow
             
             $ClientId = Read-Host "Enter Application (client) ID"
@@ -211,9 +226,9 @@ if (-not $ClientId -or -not $ClientSecret) {
             Write-Host "`n📋 Registering service principal to additional environments..." -ForegroundColor Yellow
             
             # List environments again
-            Write-Host "   Available environments:" -ForegroundColor Gray
-            $envList = pac admin list 2>&1 | Out-String
-            Write-Host "`n$envList" -ForegroundColor Cyan
+            $envListRaw = pac admin list 2>&1 | Out-String
+            Write-Host "`n   Available Environments:" -ForegroundColor Cyan
+            Write-Host "$envListRaw" -ForegroundColor White
             
             $continueRegistering = $true
             while ($continueRegistering) {
@@ -639,8 +654,8 @@ try {
     # Step 3: Merge everything
     $completeReport = Merge-AllData -Agents $agents -CreditsLookup $creditsLookup -DataverseLookup @{}
     
-    # Create Reports directory if it doesn't exist
-    $reportsDir = Join-Path $scriptDir "Reports"
+    # Create Reports directory if it doesn't exist (at repository root level)
+    $reportsDir = Join-Path (Split-Path $scriptDir -Parent) "Reports"
     if (-not (Test-Path $reportsDir)) {
         Write-Host "`n📁 Creating Reports directory..." -ForegroundColor Gray
         New-Item -Path $reportsDir -ItemType Directory -Force | Out-Null

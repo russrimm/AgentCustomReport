@@ -118,7 +118,8 @@ Follow the interactive prompts:
    - Creates comprehensive dataset
 
 6. **Exports to CSV**
-   - Filename: `CopilotAgents_CompleteReport_YYYYMMDD_HHMMSS.csv`
+   - Filename: `Reports/CopilotAgents_CompleteReport_YYYYMMDD_HHMMSS.csv`
+   - Saved to repository root's Reports directory
    - All fields populated with complete data
    - Timestamped for version tracking
 
@@ -209,7 +210,7 @@ Choice: Y
    ✓ Merged owner and creator information
    ✓ Merged credits consumption data
 
-💾 Exporting to CSV: CopilotAgents_CompleteReport_20260130_143527.csv
+💾 Exporting to CSV: Reports/CopilotAgents_CompleteReport_20260130_143527.csv
    ✓ Export complete
 
 ╔══════════════════════════════════════════════════════════════════════╗
@@ -650,8 +651,8 @@ After running Get-CompleteCopilotReport.ps1:
 
 ### 1. Analyze in Excel
 ```powershell
-# Open CSV in Excel
-Start-Process "CopilotAgents_CompleteReport_*.csv"
+# Open CSV in Excel (from repository root)
+Start-Process "Reports\CopilotAgents_CompleteReport_*.csv"
 
 # Create pivot tables:
 # - Agents by Environment

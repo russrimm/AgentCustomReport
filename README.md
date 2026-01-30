@@ -188,8 +188,6 @@ This handles everything automatically:
 5. Merges all datasets (agents + environments + owners + credits)
 6. Generates timestamped CSV report with execution summary
 
-   ```
-
 ## Limitations & Considerations
 
 ### Current Limitations
@@ -200,17 +198,12 @@ This handles everything automatically:
    - Script supports multi-environment registration during setup
    - Future environments require manual registration or re-running setup
 
-2. **Active Users Metric**
-   - Not available in any API endpoint
-   - Microsoft Analytics API only shows aggregate tenant metrics
-   - Individual agent user counts not exposed via any known API
-
-3. **Per-Environment API Calls**
+2. **Per-Environment API Calls**
    - Dataverse API requires separate call per environment
    - Large tenants with many environments may have longer execution times
    - Rate limiting considerations for environments with many agents
 
-4. **Credits Data Availability**
+3. **Credits Data Availability**
    - Only available for agents with actual usage
    - Historical data limited to lookback period
    - Licensing API is undocumented (v0.1-alpha) and may change
