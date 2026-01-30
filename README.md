@@ -64,14 +64,6 @@ This retrieves all available agent data in a single execution with automated ser
 - **Purpose**: Detailed bot data including description, solution ID, timestamps, owners
 - **Setup**: Service principal must be registered via `pac admin create-service-principal --environment {environmentId}`
 
-**Sample Query**:
-```
-https://{org}.crm.dynamics.com/api/data/v9.2/bots?
-  $select=botid,name,publishedby,displayname,schemaname,solutionid,
-          description,overriddencreatedon,modifiedon,_ownerid_value,_createdby_value
-  &$expand=ownerid($select=fullname),createdby($select=fullname)
-```
-
 ### 3. Licensing API - Credits Consumption (Undocumented)
 - **Endpoint**: `https://licensing.powerplatform.microsoft.com/v0.1-alpha/tenants/{tenantId}/entitlements/MCSMessages/environments/{environmentId}/resources?fromDate={MM-DD-YYYY}&toDate={MM-DD-YYYY}`
 - **Method**: GET
